@@ -93,6 +93,7 @@ def main(args):
     (exp_path / "ckpt").mkdir(exist_ok=True)
     (exp_path / "img").mkdir(exist_ok=True)
     
+    # checkpoint list
     ckpt_list = []
     for i in range(args.epochs):
         model.train()

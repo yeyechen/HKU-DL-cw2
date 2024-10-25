@@ -105,20 +105,31 @@ class DecoderBlock(nn.Module):
     '''
         Upsample process of UNet architecture
     '''
-    def __init__(self,in_channels,out_channels,time_embedding_dim):
+    def __init__(self, in_channels, out_channels, time_embedding_dim):
         super().__init__()
-        # ---------- **** ---------- #
-        # YOUR CODE HERE
-        # Hint: you can refer to the EncoderBlock class
-        # ---------- **** ---------- #
+        # Upsample the input feature map
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        
+        # Convolutional layers to refine the upsampled features
+        self.conv1 = ConvBnSiLu(in_channels, out_channels, kernel_size=3, padding=1)
+        self.conv2 = ConvBnSiLu(out_channels, out_channels//2, kernel_size=3, padding=1)
+        
+        # Optional: Incorporate time embedding if needed
+        self.time_mlp = TimeMLP(embedding_dim=time_embedding_dim, hidden_dim=out_channels, out_dim=out_channels)
 
-    def forward(self,x,x_shortcut,t=None):
-
-        # ---------- **** ---------- #
-        # YOUR CODE HERE
-        # Hint: you can refer to the EncoderBlock class and use nn.Upsample
-        # ---------- **** ---------- #
-
+    def forward(self, x, x_shortcut, t=None):
+        x = self.upsample(x)
+        
+        # Concatenate with the corresponding encoder feature map
+        x = torch.cat([x, x_shortcut], dim=1)
+        
+        x = self.conv1(x)
+        x = self.conv2(x)
+        
+        # Optionally incorporate time embedding
+        if t is not None:
+            x = self.time_mlp(x, t)
+        
         return x
 
 
@@ -142,13 +153,36 @@ class Unet(nn.Module):
 
         self.final_conv=nn.Conv2d(in_channels=channels[0][0]//2,out_channels=out_channels,kernel_size=1)
 
-    def forward(self,x,t=None):
+    def forward(self, x, t=None):
         '''
             Implement the data flow of the UNet architecture
         '''
-        # ---------- **** ---------- #
-        # YOUR CODE HERE
-        # ---------- **** ---------- #
+        # Initial convolution
+        x = self.init_conv(x)
+
+        # Time embedding
+        if t is not None:
+            t = self.time_embedding(t)
+
+        # Encoder path
+        skip_connections = []
+        for encoder in self.encoder_blocks:
+            encoder_output = encoder(x, t)
+            x = encoder_output[0]
+            x_shortcut = encoder_output[1]
+            skip_connections.append(x_shortcut)
+
+        # Middle block
+        x = self.mid_block(x)
+
+        # Decoder path
+        for decoder in self.decoder_blocks:
+            skip = skip_connections.pop()
+            x = decoder(x, skip, t)
+
+        # Final convolution
+        x = self.final_conv(x)
+
         return x
 
     def _cal_channels(self,base_dim,dim_mults):
@@ -161,7 +195,7 @@ class Unet(nn.Module):
         return channels
 
 if __name__=="__main__":
-    x=torch.randn(3,3,224,224)
+    x=torch.randn(3,3,32,32)
     t=torch.randint(0,1000,(3,))
     model=Unet(1000,128)
     y=model(x,t)

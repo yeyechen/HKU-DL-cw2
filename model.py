@@ -12,10 +12,13 @@ class Diffuser(nn.Module):
         self.in_channels = in_channels
         self.image_size = image_size
 
+        # generate variance schedule， responsible for controlling how noise is added to the image
         betas = self._cosine_variance_schedule(timesteps) # or self._linear_variance_schedule(timesteps)
+
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas,dim=-1)
 
+        # register buffers: Buffers are tensors that are not considered model parameters but are part of the model's state.
         self.register_buffer("betas", betas)
         self.register_buffer("alphas", alphas)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
@@ -25,22 +28,24 @@ class Diffuser(nn.Module):
         self.model = Unet(timesteps,time_embedding_dim,in_channels,in_channels,base_dim,dim_mults)
 
     def forward(self, x, noise):
-        # x:NCHW
+        # x:NCHW (batch_size, channels, height, width)
         t = torch.randint(0, self.timesteps, (x.shape[0],)).to(x.device)
         x_t = self._forward_diffusion(x, t, noise)
         pred_noise = self.model(x_t, t)
 
         return pred_noise
 
+    # Genrating new images from random noise using reverse diffusion process
     @torch.no_grad()
     def sampling(self, n_samples: int, device="cuda") -> Tensor:
         x_t=torch.randn((n_samples,self.in_channels,self.image_size,self.image_size)).to(device)
+        # iterative reverse diffusion
         for i in range(self.timesteps - 1, -1, -1):
             noise = torch.randn_like(x_t).to(device)
             t = torch.tensor([i for _ in range(n_samples)]).to(device)
             x_t = self._reverse_diffusion_with_clip(x_t, t, noise)
 
-        x_t=(x_t + 1.) / 2. #[-1,1] to [0,1]
+        x_t=(x_t + 1.) / 2. # scale from range [-1,1] to [0,1]
 
         return x_t
     
@@ -51,18 +56,14 @@ class Diffuser(nn.Module):
 
         return betas
     
-    def _linear_variance_schedule(self, timesteps: int):
+    def _linear_variance_schedule(self, timesteps: int, start=0.0001, end=0.02):
         '''
-            generate cosine variance schedule
+            generate linear variance schedule
             reference: the DDPM paper https://proceedings.neurips.cc/paper/2020/file/4c5bcfec8584af0d967f1ab10179ca4b-Paper.pdf
             You might compare the model performance of linear and cosine variance schedules. 
         '''
-        raise NotImplementedError
-        # ---------- **** ---------- #
-        # YOUR CODE HERE
-        betas = ...
+        betas = torch.linspace(start, end, timesteps)
         return betas
-        # ---------- **** ---------- #
 
     def _forward_diffusion(self, x_0: Tensor, t: Tensor, noise: Tensor) -> Tensor:
         '''
@@ -71,13 +72,12 @@ class Diffuser(nn.Module):
             please note that alpha related tensors are registered as buffers in __init__, you can use gather method to get the values
             reference: https://lilianweng.github.io/posts/2021-07-11-diffusion-models/#forward-diffusion-process
         '''
-        raise NotImplementedError
-        # ---------- **** ---------- #
-        # YOUR CODE HERE
-        x_t = ...
-        return x_t
-        # ---------- **** ---------- #
 
+        alpha_t_cumprod = self.alphas_cumprod.gather(-1, t).reshape(x_0.shape[0], 1, 1, 1)
+        mean = torch.sqrt(alpha_t_cumprod) * x_0
+        std = torch.sqrt(1 - alpha_t_cumprod)
+        x_t = mean + std * noise
+        return x_t
 
     @torch.no_grad()
     def _reverse_diffusion_with_clip(self, x_t: Tensor, t: Tensor, noise: Tensor) -> Tensor: 
