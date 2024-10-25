@@ -107,26 +107,23 @@ class DecoderBlock(nn.Module):
     '''
     def __init__(self, in_channels, out_channels, time_embedding_dim):
         super().__init__()
-        # Upsample the input feature map
+
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         
-        # Convolutional layers to refine the upsampled features
         self.conv1 = ConvBnSiLu(in_channels, out_channels, kernel_size=3, padding=1)
         self.conv2 = ConvBnSiLu(out_channels, out_channels//2, kernel_size=3, padding=1)
         
-        # Optional: Incorporate time embedding if needed
-        self.time_mlp = TimeMLP(embedding_dim=time_embedding_dim, hidden_dim=out_channels, out_dim=out_channels)
+        self.time_mlp = TimeMLP(embedding_dim=time_embedding_dim, hidden_dim=out_channels, out_dim=out_channels//2)
 
     def forward(self, x, x_shortcut, t=None):
         x = self.upsample(x)
         
-        # Concatenate with the corresponding encoder feature map
+        # concatenate with the corresponding encoder feature map
         x = torch.cat([x, x_shortcut], dim=1)
         
         x = self.conv1(x)
         x = self.conv2(x)
         
-        # Optionally incorporate time embedding
         if t is not None:
             x = self.time_mlp(x, t)
         
@@ -157,14 +154,14 @@ class Unet(nn.Module):
         '''
             Implement the data flow of the UNet architecture
         '''
-        # Initial convolution
+        # initial convolution
         x = self.init_conv(x)
 
-        # Time embedding
+        # time embedding
         if t is not None:
             t = self.time_embedding(t)
 
-        # Encoder path
+        # encoder path
         skip_connections = []
         for encoder in self.encoder_blocks:
             encoder_output = encoder(x, t)
@@ -172,15 +169,15 @@ class Unet(nn.Module):
             x_shortcut = encoder_output[1]
             skip_connections.append(x_shortcut)
 
-        # Middle block
+        # middle block
         x = self.mid_block(x)
 
-        # Decoder path
+        # decoder path
         for decoder in self.decoder_blocks:
             skip = skip_connections.pop()
             x = decoder(x, skip, t)
 
-        # Final convolution
+        # final convolution
         x = self.final_conv(x)
 
         return x
