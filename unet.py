@@ -109,9 +109,9 @@ class DecoderBlock(nn.Module):
         super().__init__()
 
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
-        
-        self.conv1 = ConvBnSiLu(in_channels, out_channels, kernel_size=3, padding=1)
-        self.conv2 = ConvBnSiLu(out_channels, out_channels//2, kernel_size=3, padding=1)
+
+        self.conv0 = nn.Sequential(*[ResidualBottleneck(in_channels, in_channels) for i in range(3)],
+                                    ResidualBottleneck(in_channels, out_channels//2))
         
         self.time_mlp = TimeMLP(embedding_dim=time_embedding_dim, hidden_dim=out_channels, out_dim=out_channels//2)
 
@@ -121,8 +121,7 @@ class DecoderBlock(nn.Module):
         # concatenate with the corresponding encoder feature map
         x = torch.cat([x, x_shortcut], dim=1)
         
-        x = self.conv1(x)
-        x = self.conv2(x)
+        x = self.conv0(x)
         
         if t is not None:
             x = self.time_mlp(x, t)
@@ -154,10 +153,9 @@ class Unet(nn.Module):
         '''
             Implement the data flow of the UNet architecture
         '''
-        # initial convolution
+
         x = self.init_conv(x)
 
-        # time embedding
         if t is not None:
             t = self.time_embedding(t)
 
@@ -169,7 +167,6 @@ class Unet(nn.Module):
             x_shortcut = encoder_output[1]
             skip_connections.append(x_shortcut)
 
-        # middle block
         x = self.mid_block(x)
 
         # decoder path
@@ -177,7 +174,6 @@ class Unet(nn.Module):
             skip = skip_connections.pop()
             x = decoder(x, skip, t)
 
-        # final convolution
         x = self.final_conv(x)
 
         return x

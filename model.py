@@ -6,14 +6,15 @@ from unet import Unet
 from tqdm import tqdm
 
 class Diffuser(nn.Module):
-    def __init__(self,image_size,in_channels,time_embedding_dim=256,timesteps=1000,base_dim=32,dim_mults= [1, 2, 4, 8]):
+    def __init__(self,image_size,in_channels,time_embedding_dim=256,timesteps=1000,base_dim=32,dim_mults=[1, 2, 4, 8]):
         super().__init__()
         self.timesteps = timesteps
         self.in_channels = in_channels
         self.image_size = image_size
 
-        # generate variance schedule， responsible for controlling how noise is added to the image
-        betas = self._cosine_variance_schedule(timesteps) # or self._linear_variance_schedule(timesteps)
+        # generate variance schedule,responsible for controlling how noise is added to the image
+        # betas = self._cosine_variance_schedule(timesteps)
+        betas = self._linear_variance_schedule(timesteps) # alternative
 
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas,dim=-1)
@@ -93,6 +94,9 @@ class Diffuser(nn.Module):
         beta_t=self.betas.gather(-1,t).reshape(x_t.shape[0],1,1,1)
         
         x_0_pred=torch.sqrt(1. / alpha_t_cumprod)*x_t-torch.sqrt(1. / alpha_t_cumprod - 1.)*pred
+
+        # with clipping, to prevent out-of-bound values
+        # clipping can act as a form of regularisation
         x_0_pred.clamp_(-1., 1.)
 
         if t.min()>0:
@@ -105,5 +109,5 @@ class Diffuser(nn.Module):
             mean=(beta_t / (1. - alpha_t_cumprod))*x_0_pred #alpha_t_cumprod_prev=1 since 0!=1
             std=0.0
 
-        return mean+std*noise 
+        return mean+std*noise
     

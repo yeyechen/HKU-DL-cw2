@@ -13,7 +13,7 @@ import argparse
 import datetime
 from pathlib import Path
 from tqdm import tqdm
-
+import pandas as pd
 
 class ExponentialMovingAverage(torch.optim.swa_utils.AveragedModel):
     """Maintains moving averages of model parameters using an exponential decay.
@@ -88,13 +88,15 @@ def main(args):
     global_steps=0
     # create project name with current time 
     exp_name = datetime.datetime.now().strftime("%m%d-%H%M%S")
-    exp_path = Path("logs") / exp_name
+    exp_path = Path("logs") / (exp_name + ' - without clipping')
     exp_path.mkdir(parents=True)
     (exp_path / "ckpt").mkdir(exist_ok=True)
     (exp_path / "img").mkdir(exist_ok=True)
+    (exp_path / "loss").mkdir(exist_ok=True)
     
     # checkpoint list
     ckpt_list = []
+    loss_values = []
     for i in range(args.epochs):
         model.train()
         leave_option = False if i < args.epochs - 1 else True
@@ -124,8 +126,16 @@ def main(args):
             remove_ckpt.unlink()
 
         model_ema.eval()
+        # generate samples and save to the target folder, could take longer time to run
         samples=model_ema.module.sampling(args.n_samples, device=device)
         save_image(samples, exp_path / "img" / f"{i}.png", nrow=int(math.sqrt(args.n_samples)))
+        loss_values.append(loss.detach().cpu().item())
+
+    loss_df = pd.DataFrame({
+        "loss_value": loss_values
+    })
+    loss_df.to_csv(exp_path / "loss" / "loss_values.csv")
+    print(f"Training finished after {args.epochs} epochs!")
 
 if __name__=="__main__":
     args=parse_args()
