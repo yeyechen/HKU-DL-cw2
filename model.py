@@ -6,15 +6,15 @@ from unet import Unet
 from tqdm import tqdm
 
 class Diffuser(nn.Module):
-    def __init__(self,image_size,in_channels,time_embedding_dim=256,timesteps=1000,base_dim=32,dim_mults=[1, 2, 4, 8]):
+    def __init__(self,image_size,in_channels,time_embedding_dim=256,timesteps=1000,num_classes=10,base_dim=32,dim_mults=[1, 2, 4, 8]):
         super().__init__()
         self.timesteps = timesteps
         self.in_channels = in_channels
         self.image_size = image_size
 
         # generate variance schedule,responsible for controlling how noise is added to the image
-        # betas = self._cosine_variance_schedule(timesteps)
-        betas = self._linear_variance_schedule(timesteps) # alternative
+        betas = self._cosine_variance_schedule(timesteps)
+        # betas = self._linear_variance_schedule(timesteps) # alternative
 
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas,dim=-1)
@@ -26,25 +26,26 @@ class Diffuser(nn.Module):
         self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
         self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.-alphas_cumprod))
 
-        self.model = Unet(timesteps,time_embedding_dim,in_channels,in_channels,base_dim,dim_mults)
+        self.model = Unet(timesteps,num_classes,time_embedding_dim,in_channels,in_channels,base_dim,dim_mults)
 
-    def forward(self, x, noise):
+    def forward(self, x, noise, label):
         # x:NCHW (batch_size, channels, height, width)
         t = torch.randint(0, self.timesteps, (x.shape[0],)).to(x.device)
         x_t = self._forward_diffusion(x, t, noise)
-        pred_noise = self.model(x_t, t)
+        pred_noise = self.model(x_t, t, label)
 
         return pred_noise
 
     # Genrating new images from random noise using reverse diffusion process
     @torch.no_grad()
-    def sampling(self, n_samples: int, device="cuda") -> Tensor:
+    def sampling(self, n_samples: int, label: int, device="cuda") -> Tensor:
         x_t=torch.randn((n_samples,self.in_channels,self.image_size,self.image_size)).to(device)
+        label = torch.tensor(label).to(device)
         # iterative reverse diffusion
         for i in range(self.timesteps - 1, -1, -1):
             noise = torch.randn_like(x_t).to(device)
             t = torch.tensor([i for _ in range(n_samples)]).to(device)
-            x_t = self._reverse_diffusion_with_clip(x_t, t, noise)
+            x_t = self._reverse_diffusion_with_clip(x_t, t, label, noise)
 
         x_t=(x_t + 1.) / 2. # scale from range [-1,1] to [0,1]
 
@@ -81,14 +82,14 @@ class Diffuser(nn.Module):
         return x_t
 
     @torch.no_grad()
-    def _reverse_diffusion_with_clip(self, x_t: Tensor, t: Tensor, noise: Tensor) -> Tensor: 
+    def _reverse_diffusion_with_clip(self, x_t: Tensor, t: Tensor, label: Tensor, noise: Tensor) -> Tensor: 
         '''
             reverse diffusion process with clipping
             hint: with clip: pred_noise -> pred_x_0 (clip to [-1.0,1.0]) -> pred_mean and pred_std
                   without clip: pred_noise -> pred_mean and pred_std
                   you may compare the model performance with and without clipping
         '''
-        pred=self.model(x_t,t)
+        pred=self.model(x_t,t,label)
         alpha_t=self.alphas.gather(-1,t).reshape(x_t.shape[0],1,1,1)
         alpha_t_cumprod=self.alphas_cumprod.gather(-1,t).reshape(x_t.shape[0],1,1,1)
         beta_t=self.betas.gather(-1,t).reshape(x_t.shape[0],1,1,1)

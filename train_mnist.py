@@ -45,15 +45,17 @@ def create_mnist_dataloaders(batch_size,image_size=28,num_workers=4):
                         transform=preprocess
                         )
 
+    test_labels = test_dataset.targets
+    distinct_labels = set(test_labels.numpy())
     return DataLoader(train_dataset,batch_size=batch_size,shuffle=True,num_workers=num_workers),\
-            DataLoader(test_dataset,batch_size=batch_size,shuffle=False,num_workers=num_workers)
+            DataLoader(test_dataset,batch_size=batch_size,shuffle=False,num_workers=num_workers), distinct_labels
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Training MNISTDiffusion")
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=256)    
-    parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--n_samples', type=int, help='define sampling amounts after every epoch trained', default=36)
+    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--n_samples', type=int, help='define sampling amounts after every epoch trained', default=4)
     parser.add_argument('--model_base_dim', type=int,help='base dim of Unet', default=64)
     parser.add_argument('--timesteps', type=int, help='sampling steps of DDPM', default=1000)
     parser.add_argument('--model_ema_steps', type=int, help='ema model evaluation interval', default=10)
@@ -66,7 +68,7 @@ def parse_args():
 
 def main(args):
     device = "cpu" if args.cpu else "cuda"
-    train_dataloader, _ = create_mnist_dataloaders(batch_size=args.batch_size,image_size=28)
+    train_dataloader, _ , distinct_labels = create_mnist_dataloaders(batch_size=args.batch_size,image_size=28)
     model = Diffuser(
         timesteps=args.timesteps,
         image_size=28,
@@ -88,10 +90,13 @@ def main(args):
     global_steps=0
     # create project name with current time 
     exp_name = datetime.datetime.now().strftime("%m%d-%H%M%S")
-    exp_path = Path("logs") / (exp_name + ' - without clipping')
+    exp_path = Path("logs") / (exp_name + ' - conditional')
     exp_path.mkdir(parents=True)
     (exp_path / "ckpt").mkdir(exist_ok=True)
     (exp_path / "img").mkdir(exist_ok=True)
+    for digit_label in distinct_labels:
+        (exp_path / "img" / str(digit_label)).mkdir(exist_ok=True)
+        
     (exp_path / "loss").mkdir(exist_ok=True)
     
     # checkpoint list
@@ -101,10 +106,14 @@ def main(args):
         model.train()
         leave_option = False if i < args.epochs - 1 else True
         training_progress = tqdm(train_dataloader, desc='Training Progress', leave=leave_option)
-        for image, _ in training_progress:
+
+        # incorperating conditional generation (generate specific digits)
+        loss_curr_epoch = 0
+        for image, label in training_progress:
             noise = torch.randn_like(image).to(device)
             image = image.to(device)
-            pred = model(image, noise)
+            label = label.to(device)
+            pred = model(image, noise, label)
             loss: Tensor = loss_fn(pred, noise)
             loss.backward()
             optimizer.step()
@@ -114,6 +123,7 @@ def main(args):
                 model_ema.update_parameters(model)
             global_steps += 1
             training_progress.set_description(f"epoch-{i} loss: {loss.detach().cpu().item():.4f}")
+            loss_curr_epoch += loss.detach().cpu().item()
         ckpt = {
             "model": model.state_dict(),
             "model_ema": model_ema.state_dict()
@@ -126,10 +136,13 @@ def main(args):
             remove_ckpt.unlink()
 
         model_ema.eval()
-        # generate samples and save to the target folder, could take longer time to run
-        samples=model_ema.module.sampling(args.n_samples, device=device)
-        save_image(samples, exp_path / "img" / f"{i}.png", nrow=int(math.sqrt(args.n_samples)))
-        loss_values.append(loss.detach().cpu().item())
+
+        for digit_label in distinct_labels:
+            # generate samples and save to the target folder
+            samples=model_ema.module.sampling(args.n_samples, digit_label, device=device)
+            save_image(samples, exp_path / "img" / str(digit_label) / f"{i}.png", nrow=int(math.sqrt(args.n_samples)))
+
+        loss_values.append(loss_curr_epoch / args.batch_size)
 
     loss_df = pd.DataFrame({
         "loss_value": loss_values

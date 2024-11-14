@@ -82,6 +82,23 @@ class TimeMLP(nn.Module):
   
         return self.act(x)
     
+class LabelMLP(nn.Module):
+    '''
+    for conditional image generation, implementation similar to the TimeMLP class above
+    '''
+    def __init__(self, embedding_dim,hidden_dim,out_dim):
+        super().__init__()
+        self.mlp=nn.Sequential(nn.Linear(embedding_dim,hidden_dim),
+                                nn.SiLU(),
+                               nn.Linear(hidden_dim,out_dim))
+        self.act=nn.SiLU()
+    
+    def forward(self,x,label):
+        label_emb = self.mlp(label).unsqueeze(-1).unsqueeze(-1)
+        x=x+label_emb
+
+        return self.act(x)
+    
 class EncoderBlock(nn.Module):
     def __init__(self,in_channels,out_channels,time_embedding_dim):
         super().__init__()
@@ -89,17 +106,22 @@ class EncoderBlock(nn.Module):
                                     ResidualBottleneck(in_channels,out_channels//2))
 
         self.time_mlp=TimeMLP(embedding_dim=time_embedding_dim,hidden_dim=out_channels,out_dim=out_channels//2)
+        self.label_mlp=LabelMLP(embedding_dim=time_embedding_dim,hidden_dim=out_channels,out_dim=out_channels//2)
+
         self.conv1=ResidualDownsample(out_channels//2,out_channels)
     
-    def forward(self,x,t=None):
+    def forward(self,x,t=None, label=None):
         x_shortcut=self.conv0(x)
         if t is not None:
             x=self.time_mlp(x_shortcut,t)
+
+        if label is not None:
+            x=self.label_mlp(x_shortcut,label)
+
         x=self.conv1(x)
 
         return [x,x_shortcut]
         
-
 
 class DecoderBlock(nn.Module):
     '''
@@ -114,8 +136,9 @@ class DecoderBlock(nn.Module):
                                     ResidualBottleneck(in_channels, out_channels//2))
         
         self.time_mlp = TimeMLP(embedding_dim=time_embedding_dim, hidden_dim=out_channels, out_dim=out_channels//2)
+        self.label_mlp = LabelMLP(embedding_dim=time_embedding_dim, hidden_dim=out_channels, out_dim=out_channels//2)
 
-    def forward(self, x, x_shortcut, t=None):
+    def forward(self, x, x_shortcut, t=None, label=None):
         x = self.upsample(x)
         
         # concatenate with the corresponding encoder feature map
@@ -126,12 +149,15 @@ class DecoderBlock(nn.Module):
         if t is not None:
             x = self.time_mlp(x, t)
         
+        if label is not None:
+            x = self.label_mlp(x, label)
+
         return x
 
 
 class Unet(nn.Module):
 
-    def __init__(self,timesteps,time_embedding_dim,in_channels=3,out_channels=2,base_dim=32,dim_mults=[2,4,8,16]):
+    def __init__(self,timesteps,num_classes,time_embedding_dim,in_channels=3,out_channels=2,base_dim=32,dim_mults=[2,4,8,16]):
         super().__init__()
         assert isinstance(dim_mults,(list,tuple))
         assert base_dim%2==0 
@@ -140,6 +166,7 @@ class Unet(nn.Module):
 
         self.init_conv=ConvBnSiLu(in_channels,base_dim,3,1,1)
         self.time_embedding=nn.Embedding(timesteps,time_embedding_dim)
+        self.label_embedding=nn.Embedding(num_classes,time_embedding_dim)
 
         self.encoder_blocks=nn.ModuleList([EncoderBlock(c[0],c[1],time_embedding_dim) for c in channels])
         self.decoder_blocks=nn.ModuleList([DecoderBlock(c[1],c[0],time_embedding_dim) for c in channels[::-1]])
@@ -149,7 +176,7 @@ class Unet(nn.Module):
 
         self.final_conv=nn.Conv2d(in_channels=channels[0][0]//2,out_channels=out_channels,kernel_size=1)
 
-    def forward(self, x, t=None):
+    def forward(self, x, t=None, label=None):
         '''
             Implement the data flow of the UNet architecture
         '''
@@ -159,10 +186,13 @@ class Unet(nn.Module):
         if t is not None:
             t = self.time_embedding(t)
 
+        if label is not None:
+            label = self.label_embedding(label)
+
         # encoder path
         skip_connections = []
         for encoder in self.encoder_blocks:
-            encoder_output = encoder(x, t)
+            encoder_output = encoder(x, t, label)
             x = encoder_output[0]
             x_shortcut = encoder_output[1]
             skip_connections.append(x_shortcut)
@@ -172,7 +202,7 @@ class Unet(nn.Module):
         # decoder path
         for decoder in self.decoder_blocks:
             skip = skip_connections.pop()
-            x = decoder(x, skip, t)
+            x = decoder(x, skip, t, label)
 
         x = self.final_conv(x)
 
@@ -190,6 +220,6 @@ class Unet(nn.Module):
 if __name__=="__main__":
     x=torch.randn(3,3,32,32)
     t=torch.randint(0,1000,(3,))
-    model=Unet(1000,128)
+    model=Unet(1000,10,128)
     y=model(x,t)
     print(y.shape)
